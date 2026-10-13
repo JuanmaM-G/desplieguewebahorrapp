@@ -1,0 +1,311 @@
+import { useState, useEffect } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import HeaderModulos from '../components/HeaderModulos'
+import InfoDependientes from '../components/modals/InfoDependientes'
+import { useToast } from '../context/ToastContext'
+import { useNotificaciones } from '../context/NotificacionesContext'
+import { API_URL } from '../services/api'
+
+
+let usuario = null
+try {
+  usuario = JSON.parse(localStorage.getItem('usuario'))
+} catch {
+  usuario = null
+}
+
+const PESO_LABELS = { 1: 'Muy bajo', 2: 'Bajo', 3: 'Medio', 4: 'Alto', 5: 'Muy alto' }
+const RELACIONES  = ['Hijo', 'Hija', 'Hermano', 'Hermana', 'Padre', 'Madre', 'Abuelo', 'Abuela', 'Otro']
+
+// Reglas de validación del formulario de dependientes.
+// Deben coincidir (o ser más estrictas) con las validaciones del backend.
+const NOMBRE_MAX_LENGTH = 80
+const OCUPACION_MAX_LENGTH = 80
+const PESO_VALORES_VALIDOS = [1, 2, 3, 4, 5]
+// Fecha máxima permitida: hoy (un dependiente no puede haber nacido en el futuro)
+const HOY_ISO = (() => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+})()
+
+const FORM_VACIO = { Nombre: '', Relacion: '', Ocupacion: '', Fecha_nacimiento: '', Peso_economico: '3' }
+
+const inputCls  = 'mt-1.5 w-full rounded-xl border border-white/15 bg-white/[0.07] px-3.5 py-2.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-red-400/60 focus:ring-2 focus:ring-red-400/20'
+const selectCls = inputCls
+const labelCls  = 'mt-3.5 block text-[0.72rem] font-bold uppercase tracking-[0.06em] text-zinc-400'
+
+const pesoColor = p => { if (p <= 1) return '#34d399'; if (p <= 2) return '#60a5fa'; if (p <= 3) return '#fbbf24'; if (p <= 4) return '#fb923c'; return '#f87171' }
+
+const Dependientes = () => {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const token    = localStorage.getItem('token')
+  const { mostrarToast } = useToast()
+  const { revisarAhora } = useNotificaciones()
+
+  const [dependientes, setDependientes] = useState([])
+  const [mostrarModal, setMostrarModal] = useState(false)
+  const [mostrarInfo, setMostrarInfo] = useState(false)
+  const [editandoId,   setEditandoId]   = useState(null)
+  const [formDatos,    setFormDatos]    = useState(FORM_VACIO)
+  // evita doble envío del formulario (doble clic / doble submit)
+  const [guardando, setGuardando] = useState(false)
+
+  useEffect(() => {
+    fetch(`${API_URL}/dependientes`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+      .then(res => res.json())
+      .then(data => setDependientes(Array.isArray(data) ? data : []))
+      .catch(err => console.error('Error cargando dependientes:', err))
+  }, [])
+
+  const handleChange = e => setFormDatos(prev => ({ ...prev, [e.target.name]: e.target.value }))
+
+  const handleSubmit = async e => {
+    e.preventDefault()
+
+    const nombre = formDatos.Nombre.trim()
+    const ocupacion = formDatos.Ocupacion.trim()
+    const peso = parseInt(formDatos.Peso_economico)
+
+    if (!nombre) return alert('El nombre es obligatorio')
+    if (nombre.length > NOMBRE_MAX_LENGTH) {
+      return alert(`El nombre no puede superar los ${NOMBRE_MAX_LENGTH} caracteres`)
+    }
+    if (ocupacion.length > OCUPACION_MAX_LENGTH) {
+      return alert(`La ocupación no puede superar los ${OCUPACION_MAX_LENGTH} caracteres`)
+    }
+    if (!formDatos.Relacion) return alert('La relación es obligatoria')
+    if (!formDatos.Fecha_nacimiento) return alert('La fecha de nacimiento es obligatoria')
+    if (formDatos.Fecha_nacimiento > HOY_ISO) {
+      return alert('La fecha de nacimiento no puede ser posterior a hoy')
+    }
+    if (!PESO_VALORES_VALIDOS.includes(peso)) {
+      return alert('El peso económico no es válido')
+    }
+    if (guardando) return // evita doble envío si ya hay una petición en curso
+
+    const payload = { ...formDatos, Nombre: nombre, Ocupacion: ocupacion, Peso_economico: peso, Fecha_nacimiento: formDatos.Fecha_nacimiento || null }
+
+    setGuardando(true)
+    try {
+      if (editandoId) {
+        const res = await fetch(`${API_URL}/dependientes/${editandoId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) })
+        if (res.ok) {
+          mostrarToast('Dependiente actualizado correctamente')
+          setDependientes(dependientes.map(d => d.id_dependientes === editandoId ? { ...payload, id_dependientes: editandoId } : d))
+        }
+        else { const data = await res.json(); alert(data.error || 'Error al actualizar') }
+      } else {
+        const res = await fetch(`${API_URL}/dependientes`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) })
+        const data = await res.json()
+        if (res.ok) {
+          mostrarToast('Dependiente registrado correctamente')
+          setDependientes([...dependientes, { ...payload, id_dependientes: data.id_dependientes }])
+        }
+        else alert(data.error || 'Error al guardar')
+      }
+      cerrarModal()
+    } catch (error) {
+      alert('Error de conexión con el servidor')
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const handleEditar = d => {
+    setFormDatos({ Nombre: d.Nombre, Relacion: d.Relacion, Ocupacion: d.Ocupacion || '', Fecha_nacimiento: d.Fecha_nacimiento ? d.Fecha_nacimiento.split('T')[0] : '', Peso_economico: String(d.Peso_economico ?? '3') })
+    setEditandoId(d.id_dependientes)
+    setMostrarModal(true)
+  }
+
+  const handleEliminar = async id => {
+    if (!window.confirm('¿Estás seguro de que deseas eliminar este dependiente?')) return
+    try {
+      const res = await fetch(`${API_URL}/dependientes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+      if (res.ok) {
+        mostrarToast('Dependiente eliminado correctamente')
+        setDependientes(dependientes.filter(d => d.id_dependientes !== id))
+      }
+      else alert('Error al eliminar el dependiente')
+    } catch (error) {
+      alert('Error de conexión con el servidor')
+    }
+  }
+
+  const abrirModal  = () => { setFormDatos(FORM_VACIO); setEditandoId(null); setMostrarModal(true) }
+  const cerrarModal = () => { setMostrarModal(false); setEditandoId(null); setFormDatos(FORM_VACIO) }
+
+  return (
+    <div className="min-h-screen w-full flex flex-col text-white overflow-x-hidden"
+      style={{ background: 'radial-gradient(ellipse at 30% 20%, #1e3a5f 10%, #0f172a 60%, #1a0f2e 100%)' }}>
+
+      {/* HEADER */}
+      <HeaderModulos section="dependientes" />
+
+      <button
+        type="button"
+        onClick={() => setMostrarInfo(true)}
+        aria-label="Acerca de este módulo"
+        className="self-end mr-4 sm:mr-10 -mb-1 w-7 h-7 flex items-center justify-center rounded-full border border-white/10 text-white/50 text-xs hover:text-amber-400 hover:border-amber-400/50 transition-colors"
+      >
+        ℹ
+      </button>
+
+      {mostrarInfo && <InfoDependientes onClose={() => setMostrarInfo(false)} />}
+
+      <hr className="my-1 border-none h-px"
+        style={{ background: 'linear-gradient(to right, transparent, #fbbf24, transparent)' }} />
+
+      {/* MAIN */}
+      <main className="flex-1 flex flex-col w-full max-w-[1400px] mx-auto px-8 py-8 gap-6">
+
+        {/* Bienvenida */}
+        <div>
+          <p className="text-[#a1a1aa] text-sm">Bienvenido de vuelta</p>
+
+          <h2 className="text-xl sm:text-2xl font-extrabold text-white">{usuario?.nombre || 'Usuario'} <span>👋</span></h2>
+        </div>
+
+        {/* Stat + botón */}
+        <article className="flex items-center justify-between px-8 py-6 rounded-2xl border border-white/10"
+          style={{ background: 'radial-gradient(ellipse at left, rgba(99,102,241,0.35), rgba(79,70,229,0.04))' }}>
+          <div>
+            <p className="text-xs font-bold uppercase tracking-widest text-[#818cf8] mb-1">
+              👩‍👧‍👦 Total Dependientes
+            </p>
+            <p className="text-4xl font-black text-white">{dependientes.length}</p>
+          </div>
+          <button
+            onClick={abrirModal}
+            className="px-5 py-2.5 rounded-xl font-bold text-sm cursor-pointer border-none text-white hover:-translate-y-px transition-all duration-300"
+            style={{ background: 'linear-gradient(135deg, #818cf8, #6366f1)' }}>
+            ➕ Agregar Dependiente
+          </button>
+        </article>
+
+        {/* Cards */}
+        <section className="w-full rounded-2xl border border-white/10 p-6 shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
+          style={{ background: 'rgba(255,255,255,0.04)', backdropFilter: 'blur(16px)' }}>
+
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-base font-extrabold text-[#fbbf24]">📋 Módulo de Dependientes</h3>
+          </div>
+
+          {dependientes.length === 0 ? (
+            <p className="text-zinc-500 italic text-sm">
+              No hay dependientes registrados. Agrega tu primer dependiente para comenzar.
+            </p>
+          ) : (
+            <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
+              {dependientes.map(dep => (
+                <div key={dep.id_dependientes}
+                  className="rounded-2xl p-[18px] border border-white/[0.09] transition-all duration-200 hover:-translate-y-1 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)]"
+                  style={{ background: 'rgba(255,255,255,0.05)' }}>
+
+                  <div className="flex flex-col gap-1.5 mb-3.5">
+                    <p className="text-base font-extrabold text-[#f4f4f5]">{dep.Nombre}</p>
+                    <p className="text-xs text-[#a1a1aa]">
+                      {dep.Relacion}{dep.Ocupacion ? ` · ${dep.Ocupacion}` : ''}
+                    </p>
+                    {dep.Fecha_nacimiento && (
+                      <p className="text-[0.72rem] text-zinc-500">
+                        Nac: {dep.Fecha_nacimiento.split('T')[0]}
+                      </p>
+                    )}
+                    <span
+                      className="inline-block mt-1 px-2.5 py-1 rounded-full text-[0.7rem] font-bold"
+                      style={{
+                        background: `${pesoColor(dep.Peso_economico)}22`,
+                        color: pesoColor(dep.Peso_economico),
+                        border: `1px solid ${pesoColor(dep.Peso_economico)}44`,
+                      }}>
+                      Peso económico: {PESO_LABELS[dep.Peso_economico] ?? 'N/A'}
+                    </span>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleEditar(dep)}
+                      className="flex-1 py-1.5 rounded-lg text-xs font-bold cursor-pointer border border-indigo-400/50 bg-indigo-400/10 text-[#818cf8] hover:bg-indigo-400/[0.22] transition-colors duration-150">
+                      Editar
+                    </button>
+                    <button
+                      onClick={() => handleEliminar(dep.id_dependientes)}
+                      className="flex-1 py-1.5 rounded-lg text-xs font-bold cursor-pointer border border-red-400/50 bg-red-400/10 text-[#f87171] hover:bg-red-400/[0.22] transition-colors duration-150">
+                      Eliminar
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </main>
+
+      {/* FOOTER */}
+      <footer className="w-full py-6 text-center text-zinc-700 text-[0.7rem] font-mono">
+        <p>© <strong className="text-[#fbbf24]">2026 Ahorrapp</strong>. Todos los derechos reservados.</p>
+      </footer>
+
+      {/* MODAL */}
+      {mostrarModal && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-black/65 backdrop-blur-md">
+          <div className="w-full max-w-[480px] rounded-[20px] p-7 border border-white/[0.12] shadow-[0_24px_60px_rgba(0,0,0,0.6)] max-h-[90vh] overflow-y-auto"
+            style={{ background: 'rgba(15,23,42,0.92)' }}>
+
+            <h4 className="text-lg font-extrabold text-amber-400 mb-1">{editandoId ? '✏️ Editar Dependiente' : '➕ Agregar Dependiente'}</h4>
+
+            <form onSubmit={handleSubmit} className="flex flex-col gap-1">
+
+              <label className={labelCls}>Nombre *</label>
+              <input className={inputCls} type="text" name="Nombre" value={formDatos.Nombre} onChange={handleChange} required maxLength={NOMBRE_MAX_LENGTH} disabled={guardando} placeholder="Nombre del dependiente" />
+
+
+              <label className={labelCls}>Relación *</label>
+              <select className={`${selectCls} [&>option]:bg-zinc-800`} style={{ colorScheme: 'dark' }} name="Relacion" value={formDatos.Relacion} onChange={handleChange} required disabled={guardando}>
+                <option value="" className="text-zinc-500">Selecciona una relación</option>
+                {RELACIONES.map(r => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              
+
+              <label className={labelCls}>Ocupación</label>
+              <input className={inputCls} type="text" name="Ocupacion" value={formDatos.Ocupacion} onChange={handleChange} maxLength={OCUPACION_MAX_LENGTH} disabled={guardando} placeholder="Ocupación del dependiente" />
+
+              <label className={labelCls}>Fecha de Nacimiento *</label>
+              <input className={inputCls} type="date" name="Fecha_nacimiento" value={formDatos.Fecha_nacimiento} onChange={handleChange} required max={HOY_ISO} disabled={guardando} />
+
+              <label className={labelCls}>Peso Económico</label>
+              {/* <select className= name="Relacion" value={formDatos.Relacion} onChange={handleChange} required disabled={guardando}> */}
+              <select className={`${selectCls} [&>option]:bg-zinc-800`} style={{ colorScheme: 'dark' }} name="Peso_economico" value={formDatos.Peso_economico} onChange={handleChange} required disabled={guardando}>
+                {PESO_VALORES_VALIDOS.map(p => (
+                  <option key={p} value={p}>{p} - {PESO_LABELS[p]}</option>
+                ))}
+              </select>
+
+              <div className="mt-6 flex gap-2.5">
+                <button
+                  type="submit"
+                  disabled={guardando}
+                  className="flex-1 py-2.5 rounded-xl text-sm font-bold cursor-pointer border-none text-white disabled:opacity-50"
+                  style={{ background: 'linear-gradient(135deg, #818cf8, #6366f1)' }}>
+                  {guardando ? 'Guardando...' : 'Guardar'}
+                </button>
+                <button
+                  type="button"
+                  onClick={cerrarModal}
+                  disabled={guardando}
+                  className="flex-1 py-2.5 rounded-xl text-sm font-bold cursor-pointer bg-transparent text-[#a1a1aa] border border-white/15 hover:bg-white/[0.07] transition-colors duration-150 disabled:opacity-50">
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default Dependientes
